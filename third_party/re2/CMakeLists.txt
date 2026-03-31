@@ -1,9 +1,10 @@
-cmake_minimum_required(VERSION 3.1)
+cmake_minimum_required(VERSION 3.20)
 
 project(external-re2)
 include(ExternalProject)
 
 list(APPEND CMAKE_ARGS
+    "-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
     "-DCMAKE_INSTALL_PREFIX:PATH=${CMAKE_INSTALL_PREFIX}"
     "-DCMAKE_TOOLCHAIN_FILE:PATH=${CMAKE_TOOLCHAIN_FILE}"
     "-DCMAKE_POSITION_INDEPENDENT_CODE=ON"
