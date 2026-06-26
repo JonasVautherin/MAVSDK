@@ -145,6 +145,7 @@ private:
     void notify_status_locked();
 
     void check_status();
+    void reset_capture_info();
 
     bool should_fetch_camera_definition(const std::string& uri) const;
     bool fetch_camera_definition(
