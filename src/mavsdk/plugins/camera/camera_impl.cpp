@@ -880,23 +880,13 @@ void CameraImpl::process_storage_information(const mavlink_message_t& message)
     mavlink_storage_information_t storage_information;
     mavlink_msg_storage_information_decode(&message, &storage_information);
 
-    if (storage_information.total_capacity == 0.0f) {
-        // Some MAVLink systems happen to send the STORAGE_INFORMATION message
-        // to indicate that the camera has a slot for a storage even if there
-        // is no way to know anything about that storage (e.g. whether or not
-        // there is an sdcard in the slot).
-        //
-        // We consider that a total capacity of 0 means that this is such a
-        // message, and we don't expect MAVSDK users to leverage it, which is
-        // why it is ignored.
-        return;
-    }
-
     {
         std::lock_guard<std::mutex> lock(_status.mutex);
         _status.data.storage_status = storage_status_from_mavlink(storage_information.status);
-        _status.data.available_storage_mib = storage_information.available_capacity;
-        _status.data.used_storage_mib = storage_information.used_capacity;
+        _status.data.available_storage_mib =
+            storage_information.total_capacity == 0.0f ? 0.0f : storage_information.available_capacity;
+        _status.data.used_storage_mib =
+            storage_information.total_capacity == 0.0f ? 0.0f : storage_information.used_capacity;
         _status.data.total_storage_mib = storage_information.total_capacity;
         _status.data.storage_id = storage_information.storage_id;
         _status.data.storage_type = storage_type_from_mavlink(storage_information.type);
@@ -1314,15 +1304,19 @@ void CameraImpl::check_status()
 {
     std::lock_guard<std::mutex> lock(_status.mutex);
 
-    if (_status.received_camera_capture_status && _status.received_storage_information) {
-        if (_status.subscription_callback) {
-            const auto temp_callback = _status.subscription_callback;
-            const auto temp_data = _status.data;
-            _parent->call_user_callback([temp_callback, temp_data]() { temp_callback(temp_data); });
-        }
-
+    if (_status.received_storage_information) {
+        notify_status_locked();
         _status.received_camera_capture_status = false;
         _status.received_storage_information = false;
+    }
+}
+
+void CameraImpl::notify_status_locked()
+{
+    if (_status.subscription_callback) {
+        const auto temp_callback = _status.subscription_callback;
+        const auto temp_data = _status.data;
+        _parent->call_user_callback([temp_callback, temp_data]() { temp_callback(temp_data); });
     }
 }
 
@@ -1909,15 +1903,26 @@ void CameraImpl::format_storage_async(Camera::ResultCallback callback)
                 if (camera_result == Camera::Result::Success) {
                     {
                         std::lock_guard<std::mutex> status_lock(_status.mutex);
+                        _status.data.used_storage_mib = 0.0f;
+                        _status.data.available_storage_mib = 0.0f;
+                        _status.data.total_storage_mib = 0.0f;
+                        _status.data.storage_status = Camera::Status::StorageStatus::NotAvailable;
+                        _status.data.storage_id = 0;
+                        _status.data.storage_type = Camera::Status::StorageType::Unknown;
+                        _status.received_storage_information = true;
                         _status.photo_list.clear();
                         _status.image_count = 0;
                         _status.image_count_at_connection = 0;
+                        notify_status_locked();
+                        _status.received_camera_capture_status = false;
+                        _status.received_storage_information = false;
                     }
                     {
                         std::lock_guard<std::mutex> lock(_capture_info.mutex);
                         _capture_info.last_advertised_image_index = -1;
                         _capture_info.missing_image_retries.clear();
                     }
+                    request_status();
                 }
 
                 callback(camera_result);

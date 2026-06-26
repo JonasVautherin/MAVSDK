@@ -142,6 +142,7 @@ private:
     void notify_video_stream_info();
     void notify_current_settings();
     void notify_possible_setting_options();
+    void notify_status_locked();
 
     void check_status();
 
