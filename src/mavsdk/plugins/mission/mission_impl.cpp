@@ -1014,7 +1014,7 @@ std::pair<Mission::Result, bool> MissionImpl::is_mission_finished_locked() const
     LogDebug() << "Mission finished check: reached_index=" << reached_mission_item_index
                << " total=" << total_mission_items
                << " finished=" << (finished ? "true" : "false");
-    return std::make_pair<Mission::Result, bool>(Mission::Result::Success, finished);
+    return std::pair<Mission::Result, bool>{Mission::Result::Success, finished};
 }
 
 int MissionImpl::mission_item_index_from_mavlink_index_locked(int mavlink_mission_item_index) const
