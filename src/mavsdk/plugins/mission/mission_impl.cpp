@@ -760,9 +760,25 @@ std::pair<Mission::Result, Mission::MissionPlan> MissionImpl::convert_to_result_
 
     if (result_pair.first == Mission::Result::Success) {
         std::lock_guard<std::mutex> lock(_mission_data.mutex);
-        _mission_data.normalize_current_after_download =
-            (_mission_data.last_current_mavlink_mission_item > 0 &&
-             _mission_data.last_reached_mavlink_mission_item < 0);
+        _mission_data.normalize_current_after_download = false;
+
+        if (_mission_data.last_current_mavlink_mission_item > 0) {
+            if (_mission_data.last_reached_mavlink_mission_item < 0) {
+                // Recovery case: we only have MISSION_CURRENT, so current usually points to the
+                // next MAVLink item and needs normalization.
+                _mission_data.normalize_current_after_download = true;
+            } else {
+                const int current_mission_item_index = mission_item_index_from_mavlink_index_locked(
+                    _mission_data.last_current_mavlink_mission_item);
+                const int reached_mission_item_index = mission_item_index_from_mavlink_index_locked(
+                    _mission_data.last_reached_mavlink_mission_item);
+                // If current is already ahead of reached after re-download, keep reporting reached
+                // until fresh mission updates arrive.
+                _mission_data.normalize_current_after_download =
+                    (current_mission_item_index >= 0 && reached_mission_item_index >= 0 &&
+                     current_mission_item_index > reached_mission_item_index);
+            }
+        }
     }
 
     return result_pair;
@@ -963,25 +979,32 @@ std::pair<Mission::Result, bool> MissionImpl::is_mission_finished_locked() const
         return std::make_pair<Mission::Result, bool>(Mission::Result::Success, false);
     }
 
-    if (_mission_data.last_reached_mavlink_mission_item < 0) {
-        return std::make_pair<Mission::Result, bool>(Mission::Result::Success, false);
-    }
-
     if (_mission_data.mavlink_mission_item_to_mission_item_indices.size() == 0) {
         return std::make_pair<Mission::Result, bool>(Mission::Result::Success, false);
     }
 
-    // It is not straightforward to look at "current" because it jumps to 0
-    // once the last item has been done. Therefore we have to lo decide using
-    // "reached" here.
-    // It seems that we never receive a reached when RTL is initiated after
-    // a mission, and we need to account for that.
-    const unsigned rtl_correction = _enable_return_to_launch_after_mission ? 2 : 1;
+    const int reached_mission_item_index =
+        mission_item_index_from_mavlink_index_locked(_mission_data.last_reached_mavlink_mission_item);
+    if (reached_mission_item_index < 0) {
+        return std::make_pair<Mission::Result, bool>(Mission::Result::Success, false);
+    }
 
+    // Completion is checked in mission-item space, not raw MAVLink-item space, to handle expanded
+    // mission commands (camera/gimbal/etc.) correctly.
     return std::make_pair<Mission::Result, bool>(
-        Mission::Result::Success,
-        unsigned(_mission_data.last_reached_mavlink_mission_item + rtl_correction) ==
-            _mission_data.mavlink_mission_item_to_mission_item_indices.size());
+        Mission::Result::Success, reached_mission_item_index + 1 >= total_mission_items_locked());
+}
+
+int MissionImpl::mission_item_index_from_mavlink_index_locked(int mavlink_mission_item_index) const
+{
+    if (mavlink_mission_item_index < 0 ||
+        mavlink_mission_item_index >=
+            static_cast<int>(_mission_data.mavlink_mission_item_to_mission_item_indices.size())) {
+        return -1;
+    }
+
+    return _mission_data
+        .mavlink_mission_item_to_mission_item_indices[static_cast<unsigned>(mavlink_mission_item_index)];
 }
 
 int MissionImpl::current_mission_item() const
@@ -998,28 +1021,37 @@ int MissionImpl::current_mission_item_locked() const
         return total_mission_items_locked();
     }
 
-    // We want to return the current mission item and not the underlying
-    // mavlink mission item.
-    if (_mission_data.last_current_mavlink_mission_item >=
-            static_cast<int>(_mission_data.mavlink_mission_item_to_mission_item_indices.size()) ||
-        _mission_data.last_current_mavlink_mission_item < 0) {
-        return -1;
-    }
-
     int mavlink_mission_item_index = _mission_data.last_current_mavlink_mission_item;
-    if (_mission_data.normalize_current_after_download &&
-        _mission_data.last_reached_mavlink_mission_item < 0 && mavlink_mission_item_index > 0) {
-        --mavlink_mission_item_index;
-    }
-
-    if (mavlink_mission_item_index >=
-            static_cast<int>(_mission_data.mavlink_mission_item_to_mission_item_indices.size()) ||
-        mavlink_mission_item_index < 0) {
+    if (mavlink_mission_item_index < 0) {
         return -1;
     }
 
-    return _mission_data
-        .mavlink_mission_item_to_mission_item_indices[static_cast<unsigned>(mavlink_mission_item_index)];
+    int current_mission_item_index =
+        mission_item_index_from_mavlink_index_locked(mavlink_mission_item_index);
+    if (current_mission_item_index < 0) {
+        return -1;
+    }
+
+    if (_mission_data.normalize_current_after_download) {
+        const int reached_mission_item_index =
+            mission_item_index_from_mavlink_index_locked(_mission_data.last_reached_mavlink_mission_item);
+        if (reached_mission_item_index >= 0 && current_mission_item_index > reached_mission_item_index) {
+            // Clamp to the last reached mission item so recovery does not jump +1.
+            return reached_mission_item_index;
+        }
+
+        if (mavlink_mission_item_index > 0) {
+            const int normalized_mission_item_index =
+                mission_item_index_from_mavlink_index_locked(mavlink_mission_item_index - 1);
+            if (normalized_mission_item_index >= 0 &&
+                normalized_mission_item_index < current_mission_item_index) {
+                // Fallback normalization when reached is not available yet.
+                return normalized_mission_item_index;
+            }
+        }
+    }
+
+    return current_mission_item_index;
 }
 
 int MissionImpl::total_mission_items() const

@@ -71,6 +71,8 @@ public:
     const MissionImpl& operator=(const MissionImpl&) = delete;
 
 private:
+    // Translate a raw MAVLink mission index to the user-facing mission item index.
+    int mission_item_index_from_mavlink_index_locked(int mavlink_mission_item_index) const;
     int current_mission_item_locked() const;
     int total_mission_items_locked() const;
     std::pair<Mission::Result, bool> is_mission_finished_locked() const;
