@@ -872,13 +872,6 @@ void CameraImpl::process_camera_capture_status(const mavlink_message_t& message)
             _status.image_count_at_connection = camera_capture_status.image_count;
         }
 
-        if (previous_image_count != camera_capture_status.image_count) {
-            LogInfo() << "Camera capture status image count changed: previous="
-                      << previous_image_count << " current=" << camera_capture_status.image_count
-                      << " image_status=" << int(camera_capture_status.image_status)
-                      << " video_status=" << int(camera_capture_status.video_status);
-        }
-
         if (previous_image_count != -1 &&
             camera_capture_status.image_count < previous_image_count) {
             std::lock_guard<std::mutex> capture_info_lock(_capture_info.mutex);
@@ -886,10 +879,6 @@ void CameraImpl::process_camera_capture_status(const mavlink_message_t& message)
             _capture_info.last_advertised_time_utc_us = 0;
             _capture_info.last_advertised_file_url.clear();
             _capture_info.missing_image_retries.clear();
-
-            LogInfo() << "Reset camera capture info tracking because image_count rolled back: "
-                      << "previous_image_count=" << previous_image_count
-                      << " current_image_count=" << camera_capture_status.image_count;
         }
     }
 
@@ -903,11 +892,6 @@ void CameraImpl::process_storage_information(const mavlink_message_t& message)
 
     {
         std::lock_guard<std::mutex> lock(_status.mutex);
-        const auto previous_storage_status = _status.data.storage_status;
-        const auto previous_storage_type = _status.data.storage_type;
-        const auto previous_storage_id = _status.data.storage_id;
-        const auto previous_total_storage_mib = _status.data.total_storage_mib;
-
         _status.data.storage_status = storage_status_from_mavlink(storage_information.status);
         _status.data.available_storage_mib =
             storage_information.total_capacity == 0.0f ? 0.0f : storage_information.available_capacity;
@@ -917,19 +901,6 @@ void CameraImpl::process_storage_information(const mavlink_message_t& message)
         _status.data.storage_id = storage_information.storage_id;
         _status.data.storage_type = storage_type_from_mavlink(storage_information.type);
         _status.received_storage_information = true;
-
-        if (previous_storage_status != _status.data.storage_status ||
-            previous_storage_type != _status.data.storage_type ||
-            previous_storage_id != _status.data.storage_id ||
-            previous_total_storage_mib != _status.data.total_storage_mib) {
-            LogInfo() << "Camera storage information changed: storage_id="
-                      << int(storage_information.storage_id)
-                      << " status=" << int(storage_information.status)
-                      << " type=" << int(storage_information.type)
-                      << " total_mib=" << storage_information.total_capacity
-                      << " available_mib=" << storage_information.available_capacity
-                      << " used_mib=" << storage_information.used_capacity;
-        }
     }
 
     check_status();
@@ -1029,14 +1000,6 @@ void CameraImpl::process_camera_image_captured(const mavlink_message_t& message)
         if (previous_last_advertised_index < capture_info.index ||
             should_rebaseline_after_storage_reset) {
             if (should_rebaseline_after_storage_reset) {
-                LogWarn() << "Camera capture image index moved backwards with a newer timestamp; "
-                             "treating it as a storage reset. previous_index="
-                          << previous_last_advertised_index
-                          << " current_index=" << capture_info.index
-                          << " previous_time_utc_us=" << previous_last_advertised_time_utc_us
-                          << " current_time_utc_us=" << capture_info.time_utc_us
-                          << " previous_file_url=" << _capture_info.last_advertised_file_url
-                          << " file_url=" << capture_info.file_url;
                 _capture_info.missing_image_retries.clear();
             }
 
@@ -1045,12 +1008,6 @@ void CameraImpl::process_camera_image_captured(const mavlink_message_t& message)
                 _parent->call_user_callback(
                     [temp_callback, capture_info]() { temp_callback(capture_info); });
             }
-
-            LogInfo() << "Advertising camera capture info: index=" << capture_info.index
-                      << " previous_index=" << previous_last_advertised_index
-                      << " time_utc_us=" << capture_info.time_utc_us
-                      << " result=" << int(image_captured.capture_result)
-                      << " file_url=" << capture_info.file_url;
 
             if (previous_last_advertised_index != -1 && !should_rebaseline_after_storage_reset) {
                 // Save captured indices that have been dropped to request later, however, don't
@@ -1073,23 +1030,7 @@ void CameraImpl::process_camera_image_captured(const mavlink_message_t& message)
                 _parent->call_user_callback(
                     [temp_callback, capture_info]() { temp_callback(capture_info); });
             }
-
-            LogInfo() << "Advertising requested missing camera capture info: index="
-                      << capture_info.index << " last_advertised_index="
-                      << previous_last_advertised_index
-                      << " retry_count=" << missing_image_retry->second
-                      << " time_utc_us=" << capture_info.time_utc_us
-                      << " file_url=" << capture_info.file_url;
             _capture_info.missing_image_retries.erase(missing_image_retry);
-        } else {
-            LogInfo() << "Suppressing camera capture info because it is not newer than the last "
-                         "advertised image and does not look like a storage reset: index="
-                      << capture_info.index
-                      << " last_advertised_index=" << previous_last_advertised_index
-                      << " time_utc_us=" << capture_info.time_utc_us
-                      << " last_advertised_time_utc_us="
-                      << previous_last_advertised_time_utc_us
-                      << " file_url=" << capture_info.file_url;
         }
 
         if (should_update_last_advertised) {
@@ -2024,7 +1965,6 @@ void CameraImpl::format_storage_async(Camera::ResultCallback callback)
                         _capture_info.last_advertised_time_utc_us = 0;
                         _capture_info.last_advertised_file_url.clear();
                         _capture_info.missing_image_retries.clear();
-                        LogInfo() << "Reset camera capture info tracking after storage format";
                     }
                     request_status();
                 }
