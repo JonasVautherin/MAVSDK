@@ -1,6 +1,7 @@
 #pragma once
 
 #include <map>
+#include <string>
 
 #include "camera_definition.h"
 #include "mavlink_include.h"
@@ -236,6 +237,8 @@ private:
         std::mutex mutex{};
         Camera::CaptureInfoCallback callback{nullptr};
         int last_advertised_image_index{-1};
+        uint64_t last_advertised_time_utc_us{0};
+        std::string last_advertised_file_url{};
         std::map<int, int> missing_image_retries{};
     } _capture_info{};
 
