@@ -856,17 +856,10 @@ void CameraImpl::process_camera_capture_status(const mavlink_message_t& message)
 {
     mavlink_camera_capture_status_t camera_capture_status;
     mavlink_msg_camera_capture_status_decode(&message, &camera_capture_status);
-    bool should_reset_capture_info = false;
 
     {
         std::lock_guard<std::mutex> lock(_status.mutex);
 
-        should_reset_capture_info =
-            _status.image_count != -1 && camera_capture_status.image_count < _status.image_count;
-        if (should_reset_capture_info) {
-            _status.photo_list.clear();
-            _status.image_count_at_connection = camera_capture_status.image_count;
-        }
         _status.data.video_on = (camera_capture_status.video_status == 1);
         _status.data.photo_interval_on =
             (camera_capture_status.image_status == 2 || camera_capture_status.image_status == 3);
@@ -879,10 +872,6 @@ void CameraImpl::process_camera_capture_status(const mavlink_message_t& message)
         }
     }
 
-    if (should_reset_capture_info) {
-        reset_capture_info();
-    }
-
     check_status();
 }
 
@@ -890,35 +879,18 @@ void CameraImpl::process_storage_information(const mavlink_message_t& message)
 {
     mavlink_storage_information_t storage_information;
     mavlink_msg_storage_information_decode(&message, &storage_information);
-    bool should_reset_capture_info = false;
 
     {
         std::lock_guard<std::mutex> lock(_status.mutex);
-        const auto storage_status = storage_status_from_mavlink(storage_information.status);
-        const auto storage_type = storage_type_from_mavlink(storage_information.type);
-        should_reset_capture_info =
-            storage_information.total_capacity == 0.0f ||
-            storage_status == Camera::Status::StorageStatus::NotAvailable ||
-            storage_status == Camera::Status::StorageStatus::Unformatted;
-
-        _status.data.storage_status = storage_status;
+        _status.data.storage_status = storage_status_from_mavlink(storage_information.status);
         _status.data.available_storage_mib =
             storage_information.total_capacity == 0.0f ? 0.0f : storage_information.available_capacity;
         _status.data.used_storage_mib =
             storage_information.total_capacity == 0.0f ? 0.0f : storage_information.used_capacity;
         _status.data.total_storage_mib = storage_information.total_capacity;
         _status.data.storage_id = storage_information.storage_id;
-        _status.data.storage_type = storage_type;
+        _status.data.storage_type = storage_type_from_mavlink(storage_information.type);
         _status.received_storage_information = true;
-        if (should_reset_capture_info) {
-            _status.photo_list.clear();
-            _status.image_count = -1;
-            _status.image_count_at_connection = -1;
-        }
-    }
-
-    if (should_reset_capture_info) {
-        reset_capture_info();
     }
 
     check_status();
@@ -1346,13 +1318,6 @@ void CameraImpl::notify_status_locked()
         const auto temp_data = _status.data;
         _parent->call_user_callback([temp_callback, temp_data]() { temp_callback(temp_data); });
     }
-}
-
-void CameraImpl::reset_capture_info()
-{
-    std::lock_guard<std::mutex> lock(_capture_info.mutex);
-    _capture_info.last_advertised_image_index = -1;
-    _capture_info.missing_image_retries.clear();
 }
 
 void CameraImpl::receive_command_result(
@@ -1952,7 +1917,11 @@ void CameraImpl::format_storage_async(Camera::ResultCallback callback)
                         _status.received_camera_capture_status = false;
                         _status.received_storage_information = false;
                     }
-                    reset_capture_info();
+                    {
+                        std::lock_guard<std::mutex> lock(_capture_info.mutex);
+                        _capture_info.last_advertised_image_index = -1;
+                        _capture_info.missing_image_retries.clear();
+                    }
                     request_status();
                 }
 
