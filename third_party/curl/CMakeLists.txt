@@ -33,6 +33,8 @@ elseif(IOS)
         "-DPLATFORM=${PLATFORM}"
         "-DDEPLOYMENT_TARGET=${DEPLOYMENT_TARGET}"
         "-DENABLE_STRICT_TRY_COMPILE=${ENABLE_STRICT_TRY_COMPILE}"
+        # curl may detect pipe2 during configure on host and then fail for iOS simulator SDKs.
+        "-DHAVE_PIPE2=OFF"
         )
 elseif(CMAKE_CROSSCOMPILING) # This assumes we use dockcross
     if(${CMAKE_SYSTEM_PROCESSOR} STREQUAL "arm")
