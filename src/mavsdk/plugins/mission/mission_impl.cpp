@@ -75,6 +75,7 @@ void MissionImpl::reset_mission_progress()
     _mission_data.last_current_reported_mission_item = -1;
     _mission_data.last_total_reported_mission_item = -1;
     _mission_data.normalize_current_after_download = false;
+    _mission_data.mission_finished_latched = false;
 }
 
 void MissionImpl::process_mission_current(const mavlink_message_t& message)
@@ -83,15 +84,31 @@ void MissionImpl::process_mission_current(const mavlink_message_t& message)
     mavlink_msg_mission_current_decode(&message, &mission_current);
 
     std::lock_guard<std::mutex> lock(_mission_data.mutex);
+    const int previous_raw_current = _mission_data.last_current_mavlink_mission_item;
     _mission_data.last_current_mavlink_mission_item = mission_current.seq;
     if (mission_current.seq == 0) {
         _mission_data.normalize_current_after_download = false;
+    } else {
+        _mission_data.mission_finished_latched = false;
+    }
+
+    const int total_mission_items = total_mission_items_locked();
+    const int previous_mapped_index =
+        mission_item_index_from_mavlink_index_locked(previous_raw_current);
+    if (total_mission_items > 0 && previous_raw_current > 0 && mission_current.seq == 0 &&
+        previous_mapped_index >= total_mission_items - 1) {
+        _mission_data.mission_finished_latched = true;
+        LogDebug() << "Mission finished latch set from MISSION_CURRENT wrap. previous_raw_current="
+                   << previous_raw_current << " previous_mapped_index=" << previous_mapped_index
+                   << " total=" << total_mission_items;
     }
     LogDebug() << "MISSION_CURRENT raw_seq=" << mission_current.seq
                << " mapped_index="
                << mission_item_index_from_mavlink_index_locked(mission_current.seq)
                << " normalize_after_download="
-               << (_mission_data.normalize_current_after_download ? "true" : "false");
+               << (_mission_data.normalize_current_after_download ? "true" : "false")
+               << " mission_finished_latched="
+               << (_mission_data.mission_finished_latched ? "true" : "false");
     report_progress_locked();
 }
 
@@ -102,11 +119,18 @@ void MissionImpl::process_mission_item_reached(const mavlink_message_t& message)
 
     std::lock_guard<std::mutex> lock(_mission_data.mutex);
     _mission_data.last_reached_mavlink_mission_item = mission_item_reached.seq;
+    const int reached_mapped_index =
+        mission_item_index_from_mavlink_index_locked(mission_item_reached.seq);
+    const int total_mission_items = total_mission_items_locked();
+    if (total_mission_items > 0 && reached_mapped_index >= total_mission_items - 1) {
+        _mission_data.mission_finished_latched = true;
+    }
     LogDebug() << "MISSION_ITEM_REACHED raw_seq=" << mission_item_reached.seq
-               << " mapped_index="
-               << mission_item_index_from_mavlink_index_locked(mission_item_reached.seq)
+               << " mapped_index=" << reached_mapped_index
                << " normalize_after_download="
-               << (_mission_data.normalize_current_after_download ? "true" : "false");
+               << (_mission_data.normalize_current_after_download ? "true" : "false")
+               << " mission_finished_latched="
+               << (_mission_data.mission_finished_latched ? "true" : "false");
     report_progress_locked();
 }
 
@@ -971,6 +995,10 @@ std::pair<Mission::Result, bool> MissionImpl::is_mission_finished() const
 
 std::pair<Mission::Result, bool> MissionImpl::is_mission_finished_locked() const
 {
+    if (_mission_data.mission_finished_latched) {
+        return std::make_pair<Mission::Result, bool>(Mission::Result::Success, true);
+    }
+
     if (_mission_data.mavlink_mission_item_to_mission_item_indices.size() == 0) {
         return std::make_pair<Mission::Result, bool>(Mission::Result::Success, false);
     }
@@ -982,12 +1010,9 @@ std::pair<Mission::Result, bool> MissionImpl::is_mission_finished_locked() const
     }
 
     const int total_mission_items = total_mission_items_locked();
-    // Use mission-item-space correction for RTL mode because final reached callback may be missing.
-    const int rtl_correction = _enable_return_to_launch_after_mission ? 2 : 1;
-    const bool finished = reached_mission_item_index + rtl_correction >= total_mission_items;
+    const bool finished = reached_mission_item_index + 1 >= total_mission_items;
     LogDebug() << "Mission finished check: reached_index=" << reached_mission_item_index
                << " total=" << total_mission_items
-               << " rtl_correction=" << rtl_correction
                << " finished=" << (finished ? "true" : "false");
     return std::make_pair<Mission::Result, bool>(Mission::Result::Success, finished);
 }
