@@ -74,6 +74,7 @@ void MissionImpl::reset_mission_progress()
     _mission_data.last_reached_mavlink_mission_item = -1;
     _mission_data.last_current_reported_mission_item = -1;
     _mission_data.last_total_reported_mission_item = -1;
+    _mission_data.normalize_current_after_download = false;
 }
 
 void MissionImpl::process_mission_current(const mavlink_message_t& message)
@@ -83,6 +84,9 @@ void MissionImpl::process_mission_current(const mavlink_message_t& message)
 
     std::lock_guard<std::mutex> lock(_mission_data.mutex);
     _mission_data.last_current_mavlink_mission_item = mission_current.seq;
+    if (mission_current.seq == 0) {
+        _mission_data.normalize_current_after_download = false;
+    }
     report_progress_locked();
 }
 
@@ -93,6 +97,7 @@ void MissionImpl::process_mission_item_reached(const mavlink_message_t& message)
 
     std::lock_guard<std::mutex> lock(_mission_data.mutex);
     _mission_data.last_reached_mavlink_mission_item = mission_item_reached.seq;
+    _mission_data.normalize_current_after_download = false;
     report_progress_locked();
 }
 
@@ -752,6 +757,14 @@ std::pair<Mission::Result, Mission::MissionPlan> MissionImpl::convert_to_result_
         // Don't forget to add last mission item.
         result_pair.second.mission_items.push_back(new_mission_item);
     }
+
+    if (result_pair.first == Mission::Result::Success) {
+        std::lock_guard<std::mutex> lock(_mission_data.mutex);
+        _mission_data.normalize_current_after_download =
+            (_mission_data.last_current_mavlink_mission_item > 0 &&
+             _mission_data.last_reached_mavlink_mission_item < 0);
+    }
+
     return result_pair;
 }
 
@@ -993,8 +1006,20 @@ int MissionImpl::current_mission_item_locked() const
         return -1;
     }
 
-    return _mission_data.mavlink_mission_item_to_mission_item_indices[static_cast<unsigned>(
-        _mission_data.last_current_mavlink_mission_item)];
+    int mavlink_mission_item_index = _mission_data.last_current_mavlink_mission_item;
+    if (_mission_data.normalize_current_after_download &&
+        _mission_data.last_reached_mavlink_mission_item < 0 && mavlink_mission_item_index > 0) {
+        --mavlink_mission_item_index;
+    }
+
+    if (mavlink_mission_item_index >=
+            static_cast<int>(_mission_data.mavlink_mission_item_to_mission_item_indices.size()) ||
+        mavlink_mission_item_index < 0) {
+        return -1;
+    }
+
+    return _mission_data
+        .mavlink_mission_item_to_mission_item_indices[static_cast<unsigned>(mavlink_mission_item_index)];
 }
 
 int MissionImpl::total_mission_items() const

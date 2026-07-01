@@ -128,6 +128,7 @@ private:
         Mission::MissionProgressCallback mission_progress_callback{nullptr};
         int last_current_reported_mission_item{-1};
         int last_total_reported_mission_item{-1};
+        bool normalize_current_after_download{false};
         std::weak_ptr<MAVLinkMissionTransfer::WorkItem> last_upload{};
         std::weak_ptr<MAVLinkMissionTransfer::WorkItem> last_download{};
         bool gimbal_v2_in_control{false};
