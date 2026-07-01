@@ -87,6 +87,11 @@ void MissionImpl::process_mission_current(const mavlink_message_t& message)
     if (mission_current.seq == 0) {
         _mission_data.normalize_current_after_download = false;
     }
+    LogDebug() << "MISSION_CURRENT raw_seq=" << mission_current.seq
+               << " mapped_index="
+               << mission_item_index_from_mavlink_index_locked(mission_current.seq)
+               << " normalize_after_download="
+               << (_mission_data.normalize_current_after_download ? "true" : "false");
     report_progress_locked();
 }
 
@@ -97,7 +102,11 @@ void MissionImpl::process_mission_item_reached(const mavlink_message_t& message)
 
     std::lock_guard<std::mutex> lock(_mission_data.mutex);
     _mission_data.last_reached_mavlink_mission_item = mission_item_reached.seq;
-    _mission_data.normalize_current_after_download = false;
+    LogDebug() << "MISSION_ITEM_REACHED raw_seq=" << mission_item_reached.seq
+               << " mapped_index="
+               << mission_item_index_from_mavlink_index_locked(mission_item_reached.seq)
+               << " normalize_after_download="
+               << (_mission_data.normalize_current_after_download ? "true" : "false");
     report_progress_locked();
 }
 
@@ -760,25 +769,12 @@ std::pair<Mission::Result, Mission::MissionPlan> MissionImpl::convert_to_result_
 
     if (result_pair.first == Mission::Result::Success) {
         std::lock_guard<std::mutex> lock(_mission_data.mutex);
-        _mission_data.normalize_current_after_download = false;
-
-        if (_mission_data.last_current_mavlink_mission_item > 0) {
-            if (_mission_data.last_reached_mavlink_mission_item < 0) {
-                // Recovery case: we only have MISSION_CURRENT, so current usually points to the
-                // next MAVLink item and needs normalization.
-                _mission_data.normalize_current_after_download = true;
-            } else {
-                const int current_mission_item_index = mission_item_index_from_mavlink_index_locked(
-                    _mission_data.last_current_mavlink_mission_item);
-                const int reached_mission_item_index = mission_item_index_from_mavlink_index_locked(
-                    _mission_data.last_reached_mavlink_mission_item);
-                // If current is already ahead of reached after re-download, keep reporting reached
-                // until fresh mission updates arrive.
-                _mission_data.normalize_current_after_download =
-                    (current_mission_item_index >= 0 && reached_mission_item_index >= 0 &&
-                     current_mission_item_index > reached_mission_item_index);
-            }
-        }
+        // After mission download/recovery, normalize progress to "last reached" semantics.
+        // This avoids reporting one item ahead when only MISSION_CURRENT is immediately available.
+        _mission_data.normalize_current_after_download = true;
+        LogDebug() << "Mission download complete, enabling progress normalization. raw_current="
+                   << _mission_data.last_current_mavlink_mission_item
+                   << " raw_reached=" << _mission_data.last_reached_mavlink_mission_item;
     }
 
     return result_pair;
@@ -975,10 +971,6 @@ std::pair<Mission::Result, bool> MissionImpl::is_mission_finished() const
 
 std::pair<Mission::Result, bool> MissionImpl::is_mission_finished_locked() const
 {
-    if (_mission_data.last_current_mavlink_mission_item < 0) {
-        return std::make_pair<Mission::Result, bool>(Mission::Result::Success, false);
-    }
-
     if (_mission_data.mavlink_mission_item_to_mission_item_indices.size() == 0) {
         return std::make_pair<Mission::Result, bool>(Mission::Result::Success, false);
     }
@@ -989,10 +981,15 @@ std::pair<Mission::Result, bool> MissionImpl::is_mission_finished_locked() const
         return std::make_pair<Mission::Result, bool>(Mission::Result::Success, false);
     }
 
-    // Completion is checked in mission-item space, not raw MAVLink-item space, to handle expanded
-    // mission commands (camera/gimbal/etc.) correctly.
-    return std::make_pair<Mission::Result, bool>(
-        Mission::Result::Success, reached_mission_item_index + 1 >= total_mission_items_locked());
+    const int total_mission_items = total_mission_items_locked();
+    // Use mission-item-space correction for RTL mode because final reached callback may be missing.
+    const int rtl_correction = _enable_return_to_launch_after_mission ? 2 : 1;
+    const bool finished = reached_mission_item_index + rtl_correction >= total_mission_items;
+    LogDebug() << "Mission finished check: reached_index=" << reached_mission_item_index
+               << " total=" << total_mission_items
+               << " rtl_correction=" << rtl_correction
+               << " finished=" << (finished ? "true" : "false");
+    return std::make_pair<Mission::Result, bool>(Mission::Result::Success, finished);
 }
 
 int MissionImpl::mission_item_index_from_mavlink_index_locked(int mavlink_mission_item_index) const
@@ -1036,7 +1033,10 @@ int MissionImpl::current_mission_item_locked() const
         const int reached_mission_item_index =
             mission_item_index_from_mavlink_index_locked(_mission_data.last_reached_mavlink_mission_item);
         if (reached_mission_item_index >= 0 && current_mission_item_index > reached_mission_item_index) {
-            // Clamp to the last reached mission item so recovery does not jump +1.
+            LogDebug() << "Normalizing mission current with reached value. raw_current="
+                       << _mission_data.last_current_mavlink_mission_item
+                       << " mapped_current=" << current_mission_item_index
+                       << " mapped_reached=" << reached_mission_item_index;
             return reached_mission_item_index;
         }
 
@@ -1045,7 +1045,10 @@ int MissionImpl::current_mission_item_locked() const
                 mission_item_index_from_mavlink_index_locked(mavlink_mission_item_index - 1);
             if (normalized_mission_item_index >= 0 &&
                 normalized_mission_item_index < current_mission_item_index) {
-                // Fallback normalization when reached is not available yet.
+                LogDebug() << "Normalizing mission current by decrementing raw mavlink index. raw_current="
+                           << _mission_data.last_current_mavlink_mission_item
+                           << " mapped_current=" << current_mission_item_index
+                           << " normalized_mapped=" << normalized_mission_item_index;
                 return normalized_mission_item_index;
             }
         }
