@@ -878,6 +878,19 @@ void CameraImpl::process_camera_capture_status(const mavlink_message_t& message)
                       << " image_status=" << int(camera_capture_status.image_status)
                       << " video_status=" << int(camera_capture_status.video_status);
         }
+
+        if (previous_image_count != -1 &&
+            camera_capture_status.image_count < previous_image_count) {
+            std::lock_guard<std::mutex> capture_info_lock(_capture_info.mutex);
+            _capture_info.last_advertised_image_index = -1;
+            _capture_info.last_advertised_time_utc_us = 0;
+            _capture_info.last_advertised_file_url.clear();
+            _capture_info.missing_image_retries.clear();
+
+            LogInfo() << "Reset camera capture info tracking because image_count rolled back: "
+                      << "previous_image_count=" << previous_image_count
+                      << " current_image_count=" << camera_capture_status.image_count;
+        }
     }
 
     check_status();
