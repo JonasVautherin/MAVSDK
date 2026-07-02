@@ -11,6 +11,15 @@
 
 namespace mavsdk {
 
+namespace {
+
+bool has_unresolved_uri_host_placeholder(const std::string& uri)
+{
+    return uri.find("://:::") != std::string::npos;
+}
+
+} // namespace
+
 CameraImpl::CameraImpl(System& system) : PluginImplBase(system)
 {
     _parent->register_plugin(this);
@@ -1113,6 +1122,8 @@ void CameraImpl::process_camera_information(const mavlink_message_t& message)
 {
     mavlink_camera_information_t camera_information;
     mavlink_msg_camera_information_decode(&message, &camera_information);
+    const std::string camera_definition_uri{
+        reinterpret_cast<const char*>(camera_information.cam_definition_uri)};
 
     std::lock_guard<std::mutex> lock(_information.mutex);
 
@@ -1131,10 +1142,16 @@ void CameraImpl::process_camera_information(const mavlink_message_t& message)
             [temp_callback, temp_information]() { temp_callback(temp_information); });
     }
 
+    if (_last_camera_definition_uri != camera_definition_uri) {
+        _last_camera_definition_uri = camera_definition_uri;
+        _camera_definition_fetch_count = 0;
+        _has_camera_definition_timed_out = false;
+    }
+
     if (should_fetch_camera_definition(camera_information.cam_definition_uri)) {
         _is_fetching_camera_definition = true;
 
-        std::thread([this, camera_information]() {
+        std::thread([this, camera_information, camera_definition_uri]() {
             std::string content{};
             const auto has_succeeded = fetch_camera_definition(camera_information, content);
 
@@ -1151,7 +1168,11 @@ void CameraImpl::process_camera_information(const mavlink_message_t& message)
             } else {
                 LogDebug() << "Failed to fetch camera definition!";
 
-                if (++_camera_definition_fetch_count >= 3) {
+                if (has_unresolved_uri_host_placeholder(camera_definition_uri)) {
+                    LogWarn() << "Camera definition URI has unresolved host placeholder. "
+                              << "Deferring timeout until URI is updated: "
+                              << camera_definition_uri;
+                } else if (++_camera_definition_fetch_count >= 3) {
                     LogWarn() << "Giving up fetching the camera definition";
 
                     std::lock_guard<std::mutex> thread_lock(_information.mutex);

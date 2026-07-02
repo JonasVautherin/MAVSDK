@@ -199,6 +199,7 @@ private:
     bool _is_fetching_camera_definition{false};
     bool _has_camera_definition_timed_out{false};
     size_t _camera_definition_fetch_count{0};
+    std::string _last_camera_definition_uri{};
     using CameraDefinitionCallback = std::function<void(bool)>;
     CameraDefinitionCallback _camera_definition_callback{nullptr};
 
