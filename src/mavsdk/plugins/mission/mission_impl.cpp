@@ -81,7 +81,6 @@ void MissionImpl::reset_mission_progress()
 void MissionImpl::set_progress_normalization_enabled_locked(bool enabled)
 {
     _mission_data.normalize_current_after_download = enabled;
-    _mission_data.normalize_current_stale_reached_ticks = 0;
 }
 
 void MissionImpl::set_mission_finished_latched_locked(bool mission_finished_latched)
@@ -121,32 +120,6 @@ void MissionImpl::process_mission_current(const mavlink_message_t& message)
                << " mission_finished_latched="
                << (_mission_data.mission_finished_latched ? "true" : "false");
 
-    if (_mission_data.normalize_current_after_download) {
-        const int current_mapped_index =
-            mission_item_index_from_mavlink_index_locked(_mission_data.last_current_mavlink_mission_item);
-        const int reached_mapped_index =
-            mission_item_index_from_mavlink_index_locked(_mission_data.last_reached_mavlink_mission_item);
-
-        if (_mission_data.last_reached_mavlink_mission_item >= 0 &&
-            _mission_data.last_current_mavlink_mission_item >
-                _mission_data.last_reached_mavlink_mission_item &&
-            current_mapped_index >= 0 && reached_mapped_index >= 0 &&
-            current_mapped_index > reached_mapped_index) {
-            ++_mission_data.normalize_current_stale_reached_ticks;
-            if (_mission_data.normalize_current_stale_reached_ticks >= 3) {
-                LogDebug() << "Disabling post-download progress normalization due to stale "
-                              "MISSION_ITEM_REACHED. raw_current="
-                           << _mission_data.last_current_mavlink_mission_item
-                           << " raw_reached=" << _mission_data.last_reached_mavlink_mission_item
-                           << " mapped_current=" << current_mapped_index
-                           << " mapped_reached=" << reached_mapped_index;
-                set_progress_normalization_enabled_locked(false);
-            }
-        } else {
-            set_progress_normalization_enabled_locked(_mission_data.normalize_current_after_download);
-        }
-    }
-
     report_progress_locked();
 }
 
@@ -157,7 +130,6 @@ void MissionImpl::process_mission_item_reached(const mavlink_message_t& message)
 
     std::lock_guard<std::mutex> lock(_mission_data.mutex);
     _mission_data.last_reached_mavlink_mission_item = mission_item_reached.seq;
-    set_progress_normalization_enabled_locked(_mission_data.normalize_current_after_download);
     const int reached_mapped_index =
         mission_item_index_from_mavlink_index_locked(mission_item_reached.seq);
     const int total_mission_items = total_mission_items_locked();
