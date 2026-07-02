@@ -93,6 +93,8 @@ private:
 
     void report_progress_locked();
     void reset_mission_progress();
+    void set_progress_normalization_enabled_locked(bool enabled);
+    void set_mission_finished_latched_locked(bool mission_finished_latched);
 
     void report_flight_mode_change(
         Mission::ResultCallback callback, MavlinkCommandSender::Result result);
@@ -131,6 +133,7 @@ private:
         int last_current_reported_mission_item{-1};
         int last_total_reported_mission_item{-1};
         bool normalize_current_after_download{false};
+        int normalize_current_stale_reached_ticks{0};
         bool mission_finished_latched{false};
         std::weak_ptr<MAVLinkMissionTransfer::WorkItem> last_upload{};
         std::weak_ptr<MAVLinkMissionTransfer::WorkItem> last_download{};
