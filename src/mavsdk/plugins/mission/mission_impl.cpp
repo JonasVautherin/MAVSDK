@@ -192,7 +192,13 @@ void MissionImpl::process_mission_item_reached(const mavlink_message_t& message)
     _mission_data.last_reached_mavlink_mission_item = mission_item_reached.seq;
     const int reached_mapped_index =
         mission_item_index_from_mavlink_index_locked(mission_item_reached.seq);
-    if (is_last_raw_mission_item_reached_locked()) {
+    const int total_mission_items = total_mission_items_locked();
+    const bool reached_last_mapped_item =
+        total_mission_items > 0 && reached_mapped_index >= total_mission_items - 1;
+    const bool should_latch_finished = is_last_raw_mission_item_reached_locked() ||
+                                       (!_mission_data.normalize_current_after_download &&
+                                        reached_last_mapped_item);
+    if (should_latch_finished) {
         set_mission_finished_latched_locked(true);
     }
     LogDebug() << "MISSION_ITEM_REACHED raw_seq=" << mission_item_reached.seq
@@ -1097,10 +1103,18 @@ std::pair<Mission::Result, bool> MissionImpl::is_mission_finished_locked() const
     const int total_mission_items = total_mission_items_locked();
     const int last_mavlink_index =
         mavlink_index_from_mission_item_index_locked(total_mission_items - 1);
-    const bool finished = is_last_raw_mission_item_reached_locked();
+    const bool finished_by_last_raw = is_last_raw_mission_item_reached_locked();
+    const bool finished_by_mapped = reached_mission_item_index + 1 >= total_mission_items;
+    const bool finished =
+        finished_by_last_raw ||
+        (!_mission_data.normalize_current_after_download && finished_by_mapped);
     LogDebug() << "Mission finished check: reached_index=" << reached_mission_item_index
                << " reached_raw=" << _mission_data.last_reached_mavlink_mission_item
                << " last_raw_for_last_item=" << last_mavlink_index << " total=" << total_mission_items
+               << " normalize_after_download="
+               << (_mission_data.normalize_current_after_download ? "true" : "false")
+               << " finished_by_last_raw=" << (finished_by_last_raw ? "true" : "false")
+               << " finished_by_mapped=" << (finished_by_mapped ? "true" : "false")
                << " finished=" << (finished ? "true" : "false");
     return std::pair<Mission::Result, bool>{Mission::Result::Success, finished};
 }
