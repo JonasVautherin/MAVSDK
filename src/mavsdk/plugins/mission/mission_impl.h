@@ -73,6 +73,7 @@ public:
 private:
     // Translate a raw MAVLink mission index to the user-facing mission item index.
     int mission_item_index_from_mavlink_index_locked(int mavlink_mission_item_index) const;
+    int mavlink_index_from_mission_item_index_locked(int mission_item_index) const;
     int current_mission_item_locked() const;
     int total_mission_items_locked() const;
     std::pair<Mission::Result, bool> is_mission_finished_locked() const;
@@ -95,6 +96,12 @@ private:
     void reset_mission_progress();
     void set_progress_normalization_enabled_locked(bool enabled);
     void set_mission_finished_latched_locked(bool mission_finished_latched);
+    void arm_seq0_wrap_latch_suppression_locked();
+    bool consume_seq0_wrap_latch_suppression_locked();
+    void handle_mission_current_seq_update_locked(int previous_raw_current, int current_raw_current);
+    bool is_last_raw_mission_item_reached_locked() const;
+    void apply_set_current_result_locked(int current, Mission::Result converted_result);
+    void apply_downloaded_mission_mapping_locked(std::vector<int>&& mapping);
 
     void report_flight_mode_change(
         Mission::ResultCallback callback, MavlinkCommandSender::Result result);
@@ -134,6 +141,7 @@ private:
         int last_total_reported_mission_item{-1};
         bool normalize_current_after_download{false};
         bool mission_finished_latched{false};
+        bool suppress_seq0_wrap_latch_once{false};
         std::weak_ptr<MAVLinkMissionTransfer::WorkItem> last_upload{};
         std::weak_ptr<MAVLinkMissionTransfer::WorkItem> last_download{};
         bool gimbal_v2_in_control{false};
