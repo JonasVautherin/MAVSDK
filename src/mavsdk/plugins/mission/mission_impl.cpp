@@ -96,9 +96,7 @@ void MissionImpl::process_mission_current(const mavlink_message_t& message)
     std::lock_guard<std::mutex> lock(_mission_data.mutex);
     const int previous_raw_current = _mission_data.last_current_mavlink_mission_item;
     _mission_data.last_current_mavlink_mission_item = mission_current.seq;
-    if (mission_current.seq == 0) {
-        set_progress_normalization_enabled_locked(false);
-    } else {
+    if (mission_current.seq != 0) {
         set_mission_finished_latched_locked(false);
     }
 
