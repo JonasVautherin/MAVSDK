@@ -108,6 +108,11 @@ void MissionImpl::handle_mission_current_seq_update_locked(int previous_raw_curr
 {
     if (current_raw_current != 0) {
         set_mission_finished_latched_locked(false);
+        _mission_data.suppress_seq0_wrap_latch_once = false;
+        return;
+    }
+
+    if (consume_seq0_wrap_latch_suppression_locked()) {
         return;
     }
 
@@ -119,18 +124,7 @@ void MissionImpl::handle_mission_current_seq_update_locked(int previous_raw_curr
         return;
     }
 
-    if (consume_seq0_wrap_latch_suppression_locked()) {
-        LogDebug() << "Ignoring MISSION_CURRENT wrap latch due to explicit set_current(0). "
-                      "previous_raw_current="
-                   << previous_raw_current << " previous_mapped_index=" << previous_mapped_index
-                   << " total=" << total_mission_items;
-        return;
-    }
-
     set_mission_finished_latched_locked(true);
-    LogDebug() << "Mission finished latch set from MISSION_CURRENT wrap. previous_raw_current="
-               << previous_raw_current << " previous_mapped_index=" << previous_mapped_index
-               << " total=" << total_mission_items;
 }
 
 bool MissionImpl::is_last_raw_mission_item_reached_locked() const
@@ -172,13 +166,6 @@ void MissionImpl::process_mission_current(const mavlink_message_t& message)
     const int previous_raw_current = _mission_data.last_current_mavlink_mission_item;
     _mission_data.last_current_mavlink_mission_item = mission_current.seq;
     handle_mission_current_seq_update_locked(previous_raw_current, mission_current.seq);
-    LogDebug() << "MISSION_CURRENT raw_seq=" << mission_current.seq
-               << " mapped_index="
-               << mission_item_index_from_mavlink_index_locked(mission_current.seq)
-               << " normalize_after_download="
-               << (_mission_data.normalize_current_after_download ? "true" : "false")
-               << " mission_finished_latched="
-               << (_mission_data.mission_finished_latched ? "true" : "false");
 
     report_progress_locked();
 }
@@ -200,12 +187,6 @@ void MissionImpl::process_mission_item_reached(const mavlink_message_t& message)
     if (should_latch_finished) {
         set_mission_finished_latched_locked(true);
     }
-    LogDebug() << "MISSION_ITEM_REACHED raw_seq=" << mission_item_reached.seq
-               << " mapped_index=" << reached_mapped_index
-               << " normalize_after_download="
-               << (_mission_data.normalize_current_after_download ? "true" : "false")
-               << " mission_finished_latched="
-               << (_mission_data.mission_finished_latched ? "true" : "false");
     report_progress_locked();
 }
 
@@ -874,11 +855,6 @@ std::pair<Mission::Result, Mission::MissionPlan> MissionImpl::convert_to_result_
     if (result_pair.first == Mission::Result::Success) {
         std::lock_guard<std::mutex> lock(_mission_data.mutex);
         apply_downloaded_mission_mapping_locked(std::move(mavlink_mission_item_to_mission_item_indices));
-        // After mission download/recovery, normalize progress to "last reached" semantics.
-        // This avoids reporting one item ahead when only MISSION_CURRENT is immediately available.
-        LogDebug() << "Mission download complete, enabling progress normalization. raw_current="
-                   << _mission_data.last_current_mavlink_mission_item
-                   << " raw_reached=" << _mission_data.last_reached_mavlink_mission_item;
     }
 
     return result_pair;
@@ -1100,19 +1076,9 @@ std::pair<Mission::Result, bool> MissionImpl::is_mission_finished_locked() const
     }
 
     const int total_mission_items = total_mission_items_locked();
-    const int last_mavlink_index =
-        mavlink_index_from_mission_item_index_locked(total_mission_items - 1);
     const bool finished_by_last_raw = is_last_raw_mission_item_reached_locked();
     const bool finished_by_mapped = reached_mission_item_index + 1 >= total_mission_items;
     const bool finished = finished_by_last_raw || finished_by_mapped;
-    LogDebug() << "Mission finished check: reached_index=" << reached_mission_item_index
-               << " reached_raw=" << _mission_data.last_reached_mavlink_mission_item
-               << " last_raw_for_last_item=" << last_mavlink_index << " total=" << total_mission_items
-               << " normalize_after_download="
-               << (_mission_data.normalize_current_after_download ? "true" : "false")
-               << " finished_by_last_raw=" << (finished_by_last_raw ? "true" : "false")
-               << " finished_by_mapped=" << (finished_by_mapped ? "true" : "false")
-               << " finished=" << (finished ? "true" : "false");
     return std::pair<Mission::Result, bool>{Mission::Result::Success, finished};
 }
 
@@ -1170,10 +1136,6 @@ int MissionImpl::current_mission_item_locked() const
         const int reached_mission_item_index =
             mission_item_index_from_mavlink_index_locked(_mission_data.last_reached_mavlink_mission_item);
         if (reached_mission_item_index >= 0 && current_mission_item_index > reached_mission_item_index) {
-            LogDebug() << "Normalizing mission current with reached value. raw_current="
-                       << _mission_data.last_current_mavlink_mission_item
-                       << " mapped_current=" << current_mission_item_index
-                       << " mapped_reached=" << reached_mission_item_index;
             return reached_mission_item_index;
         }
 
@@ -1182,10 +1144,6 @@ int MissionImpl::current_mission_item_locked() const
                 mission_item_index_from_mavlink_index_locked(mavlink_mission_item_index - 1);
             if (normalized_mission_item_index >= 0 &&
                 normalized_mission_item_index < current_mission_item_index) {
-                LogDebug() << "Normalizing mission current by decrementing raw mavlink index. raw_current="
-                           << _mission_data.last_current_mavlink_mission_item
-                           << " mapped_current=" << current_mission_item_index
-                           << " normalized_mapped=" << normalized_mission_item_index;
                 return normalized_mission_item_index;
             }
         }
