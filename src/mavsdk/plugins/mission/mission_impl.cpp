@@ -195,9 +195,8 @@ void MissionImpl::process_mission_item_reached(const mavlink_message_t& message)
     const int total_mission_items = total_mission_items_locked();
     const bool reached_last_mapped_item =
         total_mission_items > 0 && reached_mapped_index >= total_mission_items - 1;
-    const bool should_latch_finished = is_last_raw_mission_item_reached_locked() ||
-                                       (!_mission_data.normalize_current_after_download &&
-                                        reached_last_mapped_item);
+    const bool should_latch_finished =
+        is_last_raw_mission_item_reached_locked() || reached_last_mapped_item;
     if (should_latch_finished) {
         set_mission_finished_latched_locked(true);
     }
@@ -1105,9 +1104,7 @@ std::pair<Mission::Result, bool> MissionImpl::is_mission_finished_locked() const
         mavlink_index_from_mission_item_index_locked(total_mission_items - 1);
     const bool finished_by_last_raw = is_last_raw_mission_item_reached_locked();
     const bool finished_by_mapped = reached_mission_item_index + 1 >= total_mission_items;
-    const bool finished =
-        finished_by_last_raw ||
-        (!_mission_data.normalize_current_after_download && finished_by_mapped);
+    const bool finished = finished_by_last_raw || finished_by_mapped;
     LogDebug() << "Mission finished check: reached_index=" << reached_mission_item_index
                << " reached_raw=" << _mission_data.last_reached_mavlink_mission_item
                << " last_raw_for_last_item=" << last_mavlink_index << " total=" << total_mission_items
