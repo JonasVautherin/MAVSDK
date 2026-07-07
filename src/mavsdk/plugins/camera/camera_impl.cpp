@@ -1144,7 +1144,7 @@ void CameraImpl::process_camera_information(const mavlink_message_t& message)
 
     if (_last_camera_definition_uri != camera_definition_uri) {
         _last_camera_definition_uri = camera_definition_uri;
-        _camera_definition_fetch_count = 0;
+        _camera_definition_fetch_count.store(0, std::memory_order_relaxed);
         _has_camera_definition_timed_out = false;
     }
 
@@ -1175,7 +1175,10 @@ void CameraImpl::process_camera_information(const mavlink_message_t& message)
                               << camera_definition_uri;
                 }
 
-                if (++_camera_definition_fetch_count >= 3) {
+                const auto fetch_count =
+                    _camera_definition_fetch_count.fetch_add(1, std::memory_order_relaxed) + 1;
+
+                if (fetch_count >= 3) {
                     LogWarn() << "Giving up fetching the camera definition";
 
                     std::lock_guard<std::mutex> thread_lock(_information.mutex);
@@ -1370,7 +1373,7 @@ void CameraImpl::check_status()
 {
     std::lock_guard<std::mutex> lock(_status.mutex);
 
-    if (_status.received_storage_information) {
+    if (_status.received_storage_information || _status.received_camera_capture_status) {
         notify_status_locked();
         _status.received_camera_capture_status = false;
         _status.received_storage_information = false;
