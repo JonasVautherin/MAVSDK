@@ -1170,9 +1170,12 @@ void CameraImpl::process_camera_information(const mavlink_message_t& message)
 
                 if (has_unresolved_uri_host_placeholder(camera_definition_uri)) {
                     LogWarn() << "Camera definition URI has unresolved host placeholder. "
-                              << "Deferring timeout until URI is updated: "
+                              << "Will keep retrying up to timeout and reset retries when URI "
+                                 "updates: "
                               << camera_definition_uri;
-                } else if (++_camera_definition_fetch_count >= 3) {
+                }
+
+                if (++_camera_definition_fetch_count >= 3) {
                     LogWarn() << "Giving up fetching the camera definition";
 
                     std::lock_guard<std::mutex> thread_lock(_information.mutex);
