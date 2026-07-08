@@ -80,6 +80,7 @@ void MavlinkCommandSender::queue_command_async(
     }
 
     CommandIdentification identification = identification_from_command(command);
+    LockedQueue<Work>::Guard work_queue_guard(_work_queue);
 
     for (const auto& work : _work_queue) {
         if (work->identification == identification) {
@@ -96,7 +97,7 @@ void MavlinkCommandSender::queue_command_async(
     new_work->command = command;
     new_work->identification = identification;
     new_work->callback = callback;
-    _work_queue.push_back(new_work);
+    work_queue_guard.push_back(new_work);
 }
 
 void MavlinkCommandSender::queue_command_async(
@@ -108,6 +109,7 @@ void MavlinkCommandSender::queue_command_async(
     }
 
     CommandIdentification identification = identification_from_command(command);
+    LockedQueue<Work>::Guard work_queue_guard(_work_queue);
 
     for (const auto& work : _work_queue) {
         if (work->identification == identification) {
@@ -125,7 +127,7 @@ void MavlinkCommandSender::queue_command_async(
     new_work->identification = identification;
     new_work->callback = callback;
     new_work->time_started = _parent.get_time().steady_time();
-    _work_queue.push_back(new_work);
+    work_queue_guard.push_back(new_work);
 }
 
 void MavlinkCommandSender::receive_command_ack(mavlink_message_t message)

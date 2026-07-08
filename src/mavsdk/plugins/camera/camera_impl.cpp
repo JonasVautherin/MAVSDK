@@ -11,6 +11,15 @@
 
 namespace mavsdk {
 
+namespace {
+
+bool has_unresolved_uri_host_placeholder(const std::string& uri)
+{
+    return uri.find("://:::") != std::string::npos;
+}
+
+} // namespace
+
 CameraImpl::CameraImpl(System& system) : PluginImplBase(system)
 {
     _parent->register_plugin(this);
@@ -859,6 +868,7 @@ void CameraImpl::process_camera_capture_status(const mavlink_message_t& message)
 
     {
         std::lock_guard<std::mutex> lock(_status.mutex);
+        const auto previous_image_count = _status.image_count;
 
         _status.data.video_on = (camera_capture_status.video_status == 1);
         _status.data.photo_interval_on =
@@ -870,6 +880,15 @@ void CameraImpl::process_camera_capture_status(const mavlink_message_t& message)
         if (_status.image_count_at_connection == -1) {
             _status.image_count_at_connection = camera_capture_status.image_count;
         }
+
+        if (previous_image_count != -1 &&
+            camera_capture_status.image_count < previous_image_count) {
+            std::lock_guard<std::mutex> capture_info_lock(_capture_info.mutex);
+            _capture_info.last_advertised_image_index = -1;
+            _capture_info.last_advertised_time_utc_us = 0;
+            _capture_info.last_advertised_file_url.clear();
+            _capture_info.missing_image_retries.clear();
+        }
     }
 
     check_status();
@@ -880,23 +899,13 @@ void CameraImpl::process_storage_information(const mavlink_message_t& message)
     mavlink_storage_information_t storage_information;
     mavlink_msg_storage_information_decode(&message, &storage_information);
 
-    if (storage_information.total_capacity == 0.0f) {
-        // Some MAVLink systems happen to send the STORAGE_INFORMATION message
-        // to indicate that the camera has a slot for a storage even if there
-        // is no way to know anything about that storage (e.g. whether or not
-        // there is an sdcard in the slot).
-        //
-        // We consider that a total capacity of 0 means that this is such a
-        // message, and we don't expect MAVSDK users to leverage it, which is
-        // why it is ignored.
-        return;
-    }
-
     {
         std::lock_guard<std::mutex> lock(_status.mutex);
         _status.data.storage_status = storage_status_from_mavlink(storage_information.status);
-        _status.data.available_storage_mib = storage_information.available_capacity;
-        _status.data.used_storage_mib = storage_information.used_capacity;
+        _status.data.available_storage_mib =
+            storage_information.total_capacity == 0.0f ? 0.0f : storage_information.available_capacity;
+        _status.data.used_storage_mib =
+            storage_information.total_capacity == 0.0f ? 0.0f : storage_information.used_capacity;
         _status.data.total_storage_mib = storage_information.total_capacity;
         _status.data.storage_id = storage_information.storage_id;
         _status.data.storage_type = storage_type_from_mavlink(storage_information.type);
@@ -973,20 +982,47 @@ void CameraImpl::process_camera_image_captured(const mavlink_message_t& message)
         _captured_request_cv.notify_all();
 
         std::lock_guard<std::mutex> lock(_capture_info.mutex);
+        const auto previous_last_advertised_index = _capture_info.last_advertised_image_index;
+        const auto previous_last_advertised_time_utc_us =
+            _capture_info.last_advertised_time_utc_us;
+        auto missing_image_retry = _capture_info.missing_image_retries.find(capture_info.index);
+        const auto is_missing_image_retry =
+            missing_image_retry != _capture_info.missing_image_retries.end();
+        const auto has_newer_capture_time =
+            previous_last_advertised_time_utc_us != 0 && capture_info.time_utc_us != 0 &&
+            capture_info.time_utc_us > previous_last_advertised_time_utc_us;
+        const auto has_changed_file_url =
+            !_capture_info.last_advertised_file_url.empty() && !capture_info.file_url.empty() &&
+            capture_info.file_url != _capture_info.last_advertised_file_url;
+        const auto looks_like_new_zero_timestamp_storage_sequence =
+            previous_last_advertised_time_utc_us == 0 && capture_info.time_utc_us == 0 &&
+            has_changed_file_url && capture_info.index <= 1;
+        const auto has_rolled_back_index =
+            previous_last_advertised_index != -1 &&
+            capture_info.index <= previous_last_advertised_index && !is_missing_image_retry;
+        const auto should_rebaseline_after_storage_reset =
+            has_rolled_back_index &&
+            (has_newer_capture_time || looks_like_new_zero_timestamp_storage_sequence);
+        auto should_update_last_advertised = false;
+
         // Notify user if a new image has been captured.
-        if (_capture_info.last_advertised_image_index < capture_info.index) {
+        if (previous_last_advertised_index < capture_info.index ||
+            should_rebaseline_after_storage_reset) {
+            if (should_rebaseline_after_storage_reset) {
+                _capture_info.missing_image_retries.clear();
+            }
+
             if (_capture_info.callback) {
                 const auto temp_callback = _capture_info.callback;
                 _parent->call_user_callback(
                     [temp_callback, capture_info]() { temp_callback(capture_info); });
             }
 
-            if (_capture_info.last_advertised_image_index != -1) {
+            if (previous_last_advertised_index != -1 && !should_rebaseline_after_storage_reset) {
                 // Save captured indices that have been dropped to request later, however, don't
                 // do it from the very beginning as there might be many photos from a previous
                 // time that we don't want to request.
-                for (int i = _capture_info.last_advertised_image_index + 1; i < capture_info.index;
-                     ++i) {
+                for (int i = previous_last_advertised_index + 1; i < capture_info.index; ++i) {
                     if (_capture_info.missing_image_retries.find(i) ==
                         _capture_info.missing_image_retries.end()) {
                         _capture_info.missing_image_retries[i] = 0;
@@ -994,17 +1030,22 @@ void CameraImpl::process_camera_image_captured(const mavlink_message_t& message)
                 }
             }
 
-            _capture_info.last_advertised_image_index = capture_info.index;
+            should_update_last_advertised = true;
         }
 
-        else if (auto it = _capture_info.missing_image_retries.find(capture_info.index);
-                 it != _capture_info.missing_image_retries.end()) {
+        else if (is_missing_image_retry) {
             if (_capture_info.callback) {
                 const auto temp_callback = _capture_info.callback;
                 _parent->call_user_callback(
                     [temp_callback, capture_info]() { temp_callback(capture_info); });
             }
-            _capture_info.missing_image_retries.erase(it);
+            _capture_info.missing_image_retries.erase(missing_image_retry);
+        }
+
+        if (should_update_last_advertised) {
+            _capture_info.last_advertised_image_index = capture_info.index;
+            _capture_info.last_advertised_time_utc_us = capture_info.time_utc_us;
+            _capture_info.last_advertised_file_url = capture_info.file_url;
         }
     }
 }
@@ -1081,6 +1122,8 @@ void CameraImpl::process_camera_information(const mavlink_message_t& message)
 {
     mavlink_camera_information_t camera_information;
     mavlink_msg_camera_information_decode(&message, &camera_information);
+    const std::string camera_definition_uri{
+        reinterpret_cast<const char*>(camera_information.cam_definition_uri)};
 
     std::lock_guard<std::mutex> lock(_information.mutex);
 
@@ -1099,10 +1142,16 @@ void CameraImpl::process_camera_information(const mavlink_message_t& message)
             [temp_callback, temp_information]() { temp_callback(temp_information); });
     }
 
+    if (_last_camera_definition_uri != camera_definition_uri) {
+        _last_camera_definition_uri = camera_definition_uri;
+        _camera_definition_fetch_count.store(0, std::memory_order_relaxed);
+        _has_camera_definition_timed_out = false;
+    }
+
     if (should_fetch_camera_definition(camera_information.cam_definition_uri)) {
         _is_fetching_camera_definition = true;
 
-        std::thread([this, camera_information]() {
+        std::thread([this, camera_information, camera_definition_uri]() {
             std::string content{};
             const auto has_succeeded = fetch_camera_definition(camera_information, content);
 
@@ -1119,7 +1168,17 @@ void CameraImpl::process_camera_information(const mavlink_message_t& message)
             } else {
                 LogDebug() << "Failed to fetch camera definition!";
 
-                if (++_camera_definition_fetch_count >= 3) {
+                if (has_unresolved_uri_host_placeholder(camera_definition_uri)) {
+                    LogWarn() << "Camera definition URI has unresolved host placeholder. "
+                              << "Will keep retrying up to timeout and reset retries when URI "
+                                 "updates: "
+                              << camera_definition_uri;
+                }
+
+                const auto fetch_count =
+                    _camera_definition_fetch_count.fetch_add(1, std::memory_order_relaxed) + 1;
+
+                if (fetch_count >= 3) {
                     LogWarn() << "Giving up fetching the camera definition";
 
                     std::lock_guard<std::mutex> thread_lock(_information.mutex);
@@ -1314,15 +1373,19 @@ void CameraImpl::check_status()
 {
     std::lock_guard<std::mutex> lock(_status.mutex);
 
-    if (_status.received_camera_capture_status && _status.received_storage_information) {
-        if (_status.subscription_callback) {
-            const auto temp_callback = _status.subscription_callback;
-            const auto temp_data = _status.data;
-            _parent->call_user_callback([temp_callback, temp_data]() { temp_callback(temp_data); });
-        }
-
+    if (_status.received_storage_information || _status.received_camera_capture_status) {
+        notify_status_locked();
         _status.received_camera_capture_status = false;
         _status.received_storage_information = false;
+    }
+}
+
+void CameraImpl::notify_status_locked()
+{
+    if (_status.subscription_callback) {
+        const auto temp_callback = _status.subscription_callback;
+        const auto temp_data = _status.data;
+        _parent->call_user_callback([temp_callback, temp_data]() { temp_callback(temp_data); });
     }
 }
 
@@ -1909,15 +1972,28 @@ void CameraImpl::format_storage_async(Camera::ResultCallback callback)
                 if (camera_result == Camera::Result::Success) {
                     {
                         std::lock_guard<std::mutex> status_lock(_status.mutex);
+                        _status.data.used_storage_mib = 0.0f;
+                        _status.data.available_storage_mib = 0.0f;
+                        _status.data.total_storage_mib = 0.0f;
+                        _status.data.storage_status = Camera::Status::StorageStatus::NotAvailable;
+                        _status.data.storage_id = 0;
+                        _status.data.storage_type = Camera::Status::StorageType::Unknown;
+                        _status.received_storage_information = true;
                         _status.photo_list.clear();
                         _status.image_count = 0;
                         _status.image_count_at_connection = 0;
+                        notify_status_locked();
+                        _status.received_camera_capture_status = false;
+                        _status.received_storage_information = false;
                     }
                     {
                         std::lock_guard<std::mutex> lock(_capture_info.mutex);
                         _capture_info.last_advertised_image_index = -1;
+                        _capture_info.last_advertised_time_utc_us = 0;
+                        _capture_info.last_advertised_file_url.clear();
                         _capture_info.missing_image_retries.clear();
                     }
+                    request_status();
                 }
 
                 callback(camera_result);

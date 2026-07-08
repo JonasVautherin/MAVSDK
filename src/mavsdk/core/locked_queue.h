@@ -58,6 +58,8 @@ public:
 
         void pop_front() { _locked_queue._queue.pop_front(); }
 
+        void push_back(std::shared_ptr<T> item_ptr) { _locked_queue._queue.push_back(item_ptr); }
+
     private:
         LockedQueue<T>& _locked_queue;
     };

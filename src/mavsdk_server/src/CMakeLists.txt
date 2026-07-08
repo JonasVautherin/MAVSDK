@@ -81,7 +81,7 @@ target_link_libraries(mavsdk_server
 
 set_target_properties(mavsdk_server
     PROPERTIES COMPILE_FLAGS ${warnings}
-    VERSION ${MAVSDK_VERSION_STRING}
+    VERSION ${MAVSDK_LIBRARY_VERSION_STRING}
     SOVERSION ${MAVSDK_SOVERSION_STRING}
     )
 
@@ -165,4 +165,3 @@ if(NOT IOS)
         )
     endif()
 endif()
-

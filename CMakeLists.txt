@@ -20,6 +20,7 @@ message(STATUS "Version: ${VERSION_STR}")
 set(MAVSDK_VERSION_MAJOR 0)
 set(MAVSDK_VERSION_MINOR 0)
 set(MAVSDK_VERSION_PATCH 0)
+set(MAVSDK_VERSION_STRING "0.0.0")
 
 if(VERSION_STR MATCHES "^v([0-9]+)\\.([0-9]+)\\.([0-9]+)([-+].*)?$")
     set(MAVSDK_VERSION_MAJOR "${CMAKE_MATCH_1}")
@@ -30,7 +31,16 @@ elseif(VERSION_STR MATCHES "^([0-9]+)\\.([0-9]+)\\.([0-9]+)([-+].*)?$")
     set(MAVSDK_VERSION_MINOR "${CMAKE_MATCH_2}")
     set(MAVSDK_VERSION_PATCH "${CMAKE_MATCH_3}")
 else()
-    message(WARNING "Could not parse semantic version from '${VERSION_STR}', defaulting to 0.0.0")
+    if(VERSION_STR)
+        string(REGEX REPLACE "[^0-9A-Za-z.-]" "-" VERSION_SUFFIX "${VERSION_STR}")
+    else()
+        set(VERSION_SUFFIX "unknown")
+    endif()
+    set(MAVSDK_VERSION_STRING "0.0.0-${VERSION_SUFFIX}")
+    message(
+        WARNING
+        "Could not parse semantic version from '${VERSION_STR}', defaulting to ${MAVSDK_VERSION_STRING}"
+    )
 endif()
 
 message(STATUS "Version major: ${MAVSDK_VERSION_MAJOR}")
@@ -38,7 +48,10 @@ message(STATUS "Version minor: ${MAVSDK_VERSION_MINOR}")
 message(STATUS "Version patch: ${MAVSDK_VERSION_PATCH}")
 
 set(MAVSDK_SOVERSION_STRING ${MAVSDK_VERSION_MAJOR})
-set(MAVSDK_VERSION_STRING ${MAVSDK_VERSION_MAJOR}.${MAVSDK_VERSION_MINOR}.${MAVSDK_VERSION_PATCH})
+set(MAVSDK_LIBRARY_VERSION_STRING ${MAVSDK_VERSION_MAJOR}.${MAVSDK_VERSION_MINOR}.${MAVSDK_VERSION_PATCH})
+if(MAVSDK_VERSION_STRING STREQUAL "0.0.0")
+    set(MAVSDK_VERSION_STRING ${MAVSDK_LIBRARY_VERSION_STRING})
+endif()
 
 include("src/cmake/HunterGate.cmake")
 HunterGate(

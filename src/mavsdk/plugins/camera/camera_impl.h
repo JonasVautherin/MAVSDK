@@ -1,6 +1,8 @@
 #pragma once
 
+#include <atomic>
 #include <map>
+#include <string>
 
 #include "camera_definition.h"
 #include "mavlink_include.h"
@@ -142,6 +144,7 @@ private:
     void notify_video_stream_info();
     void notify_current_settings();
     void notify_possible_setting_options();
+    void notify_status_locked();
 
     void check_status();
 
@@ -196,7 +199,8 @@ private:
     std::unique_ptr<CameraDefinition> _camera_definition{};
     bool _is_fetching_camera_definition{false};
     bool _has_camera_definition_timed_out{false};
-    size_t _camera_definition_fetch_count{0};
+    std::atomic<size_t> _camera_definition_fetch_count{0};
+    std::string _last_camera_definition_uri{};
     using CameraDefinitionCallback = std::function<void(bool)>;
     CameraDefinitionCallback _camera_definition_callback{nullptr};
 
@@ -235,6 +239,8 @@ private:
         std::mutex mutex{};
         Camera::CaptureInfoCallback callback{nullptr};
         int last_advertised_image_index{-1};
+        uint64_t last_advertised_time_utc_us{0};
+        std::string last_advertised_file_url{};
         std::map<int, int> missing_image_retries{};
     } _capture_info{};
 

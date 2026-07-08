@@ -49,7 +49,7 @@ target_link_libraries(mavsdk
 )
 
 set_target_properties(mavsdk PROPERTIES
-    VERSION ${MAVSDK_VERSION_STRING}
+    VERSION ${MAVSDK_LIBRARY_VERSION_STRING}
     SOVERSION ${MAVSDK_SOVERSION_STRING}
 )
 

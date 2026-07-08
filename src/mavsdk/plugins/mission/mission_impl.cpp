@@ -74,6 +74,87 @@ void MissionImpl::reset_mission_progress()
     _mission_data.last_reached_mavlink_mission_item = -1;
     _mission_data.last_current_reported_mission_item = -1;
     _mission_data.last_total_reported_mission_item = -1;
+    set_progress_normalization_enabled_locked(false);
+    set_mission_finished_latched_locked(false);
+    _mission_data.suppress_seq0_wrap_latch_once = false;
+}
+
+void MissionImpl::set_progress_normalization_enabled_locked(bool enabled)
+{
+    _mission_data.normalize_current_after_download = enabled;
+}
+
+void MissionImpl::set_mission_finished_latched_locked(bool mission_finished_latched)
+{
+    _mission_data.mission_finished_latched = mission_finished_latched;
+}
+
+void MissionImpl::arm_seq0_wrap_latch_suppression_locked()
+{
+    _mission_data.suppress_seq0_wrap_latch_once = true;
+}
+
+bool MissionImpl::consume_seq0_wrap_latch_suppression_locked()
+{
+    if (!_mission_data.suppress_seq0_wrap_latch_once) {
+        return false;
+    }
+
+    _mission_data.suppress_seq0_wrap_latch_once = false;
+    return true;
+}
+
+void MissionImpl::handle_mission_current_seq_update_locked(int previous_raw_current, int current_raw_current)
+{
+    if (current_raw_current != 0) {
+        set_mission_finished_latched_locked(false);
+        _mission_data.suppress_seq0_wrap_latch_once = false;
+        return;
+    }
+
+    if (consume_seq0_wrap_latch_suppression_locked()) {
+        return;
+    }
+
+    const int total_mission_items = total_mission_items_locked();
+    const int previous_mapped_index =
+        mission_item_index_from_mavlink_index_locked(previous_raw_current);
+    if (!(total_mission_items > 0 && previous_raw_current > 0 &&
+          previous_mapped_index >= total_mission_items - 1)) {
+        return;
+    }
+
+    set_mission_finished_latched_locked(true);
+}
+
+bool MissionImpl::is_last_raw_mission_item_reached_locked() const
+{
+    const int total_mission_items = total_mission_items_locked();
+    if (total_mission_items <= 0) {
+        return false;
+    }
+
+    const int last_mavlink_index =
+        mavlink_index_from_mission_item_index_locked(total_mission_items - 1);
+    return last_mavlink_index >= 0 &&
+           _mission_data.last_reached_mavlink_mission_item >= last_mavlink_index;
+}
+
+void MissionImpl::apply_set_current_result_locked(int current, Mission::Result converted_result)
+{
+    if (current == 0 && converted_result != Mission::Result::Success) {
+        _mission_data.suppress_seq0_wrap_latch_once = false;
+    }
+
+    if (converted_result == Mission::Result::Success) {
+        set_mission_finished_latched_locked(false);
+    }
+}
+
+void MissionImpl::apply_downloaded_mission_mapping_locked(std::vector<int>&& mapping)
+{
+    _mission_data.mavlink_mission_item_to_mission_item_indices = std::move(mapping);
+    set_progress_normalization_enabled_locked(true);
 }
 
 void MissionImpl::process_mission_current(const mavlink_message_t& message)
@@ -82,7 +163,10 @@ void MissionImpl::process_mission_current(const mavlink_message_t& message)
     mavlink_msg_mission_current_decode(&message, &mission_current);
 
     std::lock_guard<std::mutex> lock(_mission_data.mutex);
+    const int previous_raw_current = _mission_data.last_current_mavlink_mission_item;
     _mission_data.last_current_mavlink_mission_item = mission_current.seq;
+    handle_mission_current_seq_update_locked(previous_raw_current, mission_current.seq);
+
     report_progress_locked();
 }
 
@@ -93,6 +177,16 @@ void MissionImpl::process_mission_item_reached(const mavlink_message_t& message)
 
     std::lock_guard<std::mutex> lock(_mission_data.mutex);
     _mission_data.last_reached_mavlink_mission_item = mission_item_reached.seq;
+    const int reached_mapped_index =
+        mission_item_index_from_mavlink_index_locked(mission_item_reached.seq);
+    const int total_mission_items = total_mission_items_locked();
+    const bool reached_last_mapped_item =
+        total_mission_items > 0 && reached_mapped_index >= total_mission_items - 1;
+    const bool should_latch_finished =
+        is_last_raw_mission_item_reached_locked() || reached_last_mapped_item;
+    if (should_latch_finished) {
+        set_mission_finished_latched_locked(true);
+    }
     report_progress_locked();
 }
 
@@ -355,6 +449,8 @@ float MissionImpl::acceptance_radius(const MissionItem& item)
 std::vector<MAVLinkMissionTransfer::ItemInt>
 MissionImpl::convert_to_int_items(const std::vector<MissionItem>& mission_items)
 {
+    std::lock_guard<std::mutex> lock(_mission_data.mutex);
+
     std::vector<MAVLinkMissionTransfer::ItemInt> int_items;
 
     bool last_position_valid = false; // This flag is to protect us from using an invalid x/y.
@@ -599,9 +695,13 @@ std::pair<Mission::Result, Mission::MissionPlan> MissionImpl::convert_to_result_
         return result_pair;
     }
 
-    _mission_data.mavlink_mission_item_to_mission_item_indices.clear();
+    {
+        std::lock_guard<std::mutex> lock(_mission_data.mutex);
+        _mission_data.mavlink_mission_item_to_mission_item_indices.clear();
+    }
 
-    Mission::DownloadMissionCallback callback;
+    std::vector<int> mavlink_mission_item_to_mission_item_indices;
+
     {
         _enable_return_to_launch_after_mission = false;
 
@@ -745,13 +845,18 @@ std::pair<Mission::Result, Mission::MissionPlan> MissionImpl::convert_to_result_
                 break;
             }
 
-            _mission_data.mavlink_mission_item_to_mission_item_indices.push_back(
-                result_pair.second.mission_items.size());
+            mavlink_mission_item_to_mission_item_indices.push_back(result_pair.second.mission_items.size());
         }
 
         // Don't forget to add last mission item.
         result_pair.second.mission_items.push_back(new_mission_item);
     }
+
+    if (result_pair.first == Mission::Result::Success) {
+        std::lock_guard<std::mutex> lock(_mission_data.mutex);
+        apply_downloaded_mission_mapping_locked(std::move(mavlink_mission_item_to_mission_item_indices));
+    }
+
     return result_pair;
 }
 
@@ -888,11 +993,21 @@ void MissionImpl::set_current_mission_item_async(
                 return;
             }
         });
+        return;
+    }
+
+    if (current == 0) {
+        std::lock_guard<std::mutex> lock(_mission_data.mutex);
+        arm_seq0_wrap_latch_suppression_locked();
     }
 
     _parent->mission_transfer().set_current_item_async(
-        mavlink_index, [this, callback](MAVLinkMissionTransfer::Result result) {
+        mavlink_index, [this, callback, current](MAVLinkMissionTransfer::Result result) {
             auto converted_result = convert_result(result);
+            {
+                std::lock_guard<std::mutex> lock(_mission_data.mutex);
+                apply_set_current_result_locked(current, converted_result);
+            }
             _parent->call_user_callback([callback, converted_result]() {
                 if (callback) {
                     callback(converted_result);
@@ -946,29 +1061,50 @@ std::pair<Mission::Result, bool> MissionImpl::is_mission_finished() const
 
 std::pair<Mission::Result, bool> MissionImpl::is_mission_finished_locked() const
 {
-    if (_mission_data.last_current_mavlink_mission_item < 0) {
-        return std::make_pair<Mission::Result, bool>(Mission::Result::Success, false);
-    }
-
-    if (_mission_data.last_reached_mavlink_mission_item < 0) {
-        return std::make_pair<Mission::Result, bool>(Mission::Result::Success, false);
+    if (_mission_data.mission_finished_latched) {
+        return std::make_pair<Mission::Result, bool>(Mission::Result::Success, true);
     }
 
     if (_mission_data.mavlink_mission_item_to_mission_item_indices.size() == 0) {
         return std::make_pair<Mission::Result, bool>(Mission::Result::Success, false);
     }
 
-    // It is not straightforward to look at "current" because it jumps to 0
-    // once the last item has been done. Therefore we have to lo decide using
-    // "reached" here.
-    // It seems that we never receive a reached when RTL is initiated after
-    // a mission, and we need to account for that.
-    const unsigned rtl_correction = _enable_return_to_launch_after_mission ? 2 : 1;
+    const int reached_mission_item_index =
+        mission_item_index_from_mavlink_index_locked(_mission_data.last_reached_mavlink_mission_item);
+    if (reached_mission_item_index < 0) {
+        return std::make_pair<Mission::Result, bool>(Mission::Result::Success, false);
+    }
 
-    return std::make_pair<Mission::Result, bool>(
-        Mission::Result::Success,
-        unsigned(_mission_data.last_reached_mavlink_mission_item + rtl_correction) ==
-            _mission_data.mavlink_mission_item_to_mission_item_indices.size());
+    const int total_mission_items = total_mission_items_locked();
+    const bool finished_by_last_raw = is_last_raw_mission_item_reached_locked();
+    const bool finished_by_mapped = reached_mission_item_index + 1 >= total_mission_items;
+    const bool finished = finished_by_last_raw || finished_by_mapped;
+    return std::pair<Mission::Result, bool>{Mission::Result::Success, finished};
+}
+
+int MissionImpl::mission_item_index_from_mavlink_index_locked(int mavlink_mission_item_index) const
+{
+    if (mavlink_mission_item_index < 0 ||
+        mavlink_mission_item_index >=
+            static_cast<int>(_mission_data.mavlink_mission_item_to_mission_item_indices.size())) {
+        return -1;
+    }
+
+    return _mission_data
+        .mavlink_mission_item_to_mission_item_indices[static_cast<unsigned>(mavlink_mission_item_index)];
+}
+
+int MissionImpl::mavlink_index_from_mission_item_index_locked(int mission_item_index) const
+{
+    for (int i = static_cast<int>(_mission_data.mavlink_mission_item_to_mission_item_indices.size()) - 1; i >= 0;
+         --i) {
+        if (_mission_data.mavlink_mission_item_to_mission_item_indices[static_cast<unsigned>(i)] ==
+            mission_item_index) {
+            return i;
+        }
+    }
+
+    return -1;
 }
 
 int MissionImpl::current_mission_item() const
@@ -985,16 +1121,35 @@ int MissionImpl::current_mission_item_locked() const
         return total_mission_items_locked();
     }
 
-    // We want to return the current mission item and not the underlying
-    // mavlink mission item.
-    if (_mission_data.last_current_mavlink_mission_item >=
-            static_cast<int>(_mission_data.mavlink_mission_item_to_mission_item_indices.size()) ||
-        _mission_data.last_current_mavlink_mission_item < 0) {
+    int mavlink_mission_item_index = _mission_data.last_current_mavlink_mission_item;
+    if (mavlink_mission_item_index < 0) {
         return -1;
     }
 
-    return _mission_data.mavlink_mission_item_to_mission_item_indices[static_cast<unsigned>(
-        _mission_data.last_current_mavlink_mission_item)];
+    int current_mission_item_index =
+        mission_item_index_from_mavlink_index_locked(mavlink_mission_item_index);
+    if (current_mission_item_index < 0) {
+        return -1;
+    }
+
+    if (_mission_data.normalize_current_after_download) {
+        const int reached_mission_item_index =
+            mission_item_index_from_mavlink_index_locked(_mission_data.last_reached_mavlink_mission_item);
+        if (reached_mission_item_index >= 0 && current_mission_item_index > reached_mission_item_index) {
+            return reached_mission_item_index;
+        }
+
+        if (mavlink_mission_item_index > 0) {
+            const int normalized_mission_item_index =
+                mission_item_index_from_mavlink_index_locked(mavlink_mission_item_index - 1);
+            if (normalized_mission_item_index >= 0 &&
+                normalized_mission_item_index < current_mission_item_index) {
+                return normalized_mission_item_index;
+            }
+        }
+    }
+
+    return current_mission_item_index;
 }
 
 int MissionImpl::total_mission_items() const
