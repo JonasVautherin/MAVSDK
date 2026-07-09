@@ -51,6 +51,30 @@ jobs:
         run: cmake $superbuild $cmake_prefix_path -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=build/${{ matrix.name }}/install -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }} -DBUILD_MAVSDK_SERVER=ON -DBUILD_SHARED_LIBS=OFF -DMACOS_FRAMEWORK=ON -DWERROR=OFF -Bbuild/${{ matrix.name }} -H.
       - name: build
         run: cmake --build build/${{ matrix.name }} -j2 --target install
+      - name: normalize framework bundle version
+        run: |
+          FRAMEWORK_DIR=build/${{ matrix.name }}/src/mavsdk_server/src/mavsdk_server.framework
+          INFO_PLIST="${FRAMEWORK_DIR}/Info.plist"
+          if [[ ! -f "${INFO_PLIST}" ]]; then
+            INFO_PLIST="${FRAMEWORK_DIR}/Resources/Info.plist"
+          fi
+          if [[ ! -f "${INFO_PLIST}" ]]; then
+            echo "Info.plist not found in ${FRAMEWORK_DIR}" >&2
+            exit 1
+          fi
+
+          SHORT_VERSION=0.0.0
+
+          if [[ "${GITHUB_REF}" =~ ^refs/tags/v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            SHORT_VERSION="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}"
+          fi
+
+          BUILD_VERSION="${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}.0"
+
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${SHORT_VERSION}" "$INFO_PLIST" || \
+            /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string ${SHORT_VERSION}" "$INFO_PLIST"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${BUILD_VERSION}" "$INFO_PLIST" || \
+            /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string ${BUILD_VERSION}" "$INFO_PLIST"
       - uses: actions/upload-artifact@v6
         with:
           name: mavsdk_server_${{ matrix.name }}.framework
@@ -105,6 +129,30 @@ jobs:
         run: cmake $superbuild $cmake_prefix_path -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DENABLE_STRICT_TRY_COMPILE=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_TOOLCHAIN_FILE=$(pwd)/tools/ios.toolchain.cmake -DPLATFORM=${{ matrix.platform }} -DDEPLOYMENT_TARGET=13.0 -DBUILD_MAVSDK_SERVER=ON -DBUILD_SHARED_LIBS=OFF -DWERROR=OFF -Bbuild/${{ matrix.name }} -H.
       - name: build
         run: cmake --build build/${{ matrix.name }} -j2
+      - name: normalize framework bundle version
+        run: |
+          FRAMEWORK_DIR=build/${{ matrix.name }}/src/mavsdk_server/src/mavsdk_server.framework
+          INFO_PLIST="${FRAMEWORK_DIR}/Info.plist"
+          if [[ ! -f "${INFO_PLIST}" ]]; then
+            INFO_PLIST="${FRAMEWORK_DIR}/Resources/Info.plist"
+          fi
+          if [[ ! -f "${INFO_PLIST}" ]]; then
+            echo "Info.plist not found in ${FRAMEWORK_DIR}" >&2
+            exit 1
+          fi
+
+          SHORT_VERSION=0.0.0
+
+          if [[ "${GITHUB_REF}" =~ ^refs/tags/v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            SHORT_VERSION="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}"
+          fi
+
+          BUILD_VERSION="${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}.0"
+
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${SHORT_VERSION}" "$INFO_PLIST" || \
+            /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string ${SHORT_VERSION}" "$INFO_PLIST"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${BUILD_VERSION}" "$INFO_PLIST" || \
+            /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string ${BUILD_VERSION}" "$INFO_PLIST"
       - name: generate dSYM
         if: ${{ matrix.generate-dsym == 'true' }}
         run: dsymutil build/${{ matrix.name }}/src/mavsdk_server/src/mavsdk_server.framework/mavsdk_server -o build/${{ matrix.name }}/src/mavsdk_server/src/mavsdk_server.framework.dSYM
